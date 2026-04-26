@@ -1,0 +1,14 @@
+.git
+.gitignore
+backend/.venv
+backend/__pycache__
+backend/.pytest_cache
+backend/knowledge
+backend/memory_module_v1/storage/chroma_memory
+backend/memory_module_v1/sessions
+backend/storage
+backend/sessions
+frontend/node_modules
+frontend/.next
+**/__pycache__
+**/*.pyc

@@ -1,0 +1,4 @@
+{"id":"xss-basics","question":"什么是 XSS？","expected_sources":["knowledge/Safety Knowledge/XSS.md"],"answer_keywords":["XSS","脚本"]}
+{"id":"csrf-defense","question":"CSRF 最有效的防护方法是什么？","expected_sources":["knowledge/Safety Knowledge/CSRF.txt"],"answer_keywords":["CSRF","验证码"]}
+{"id":"same-origin-policy","question":"什么是同源策略？","expected_sources":["knowledge/Safety Knowledge/cors.md"],"answer_keywords":["同源","策略"]}
+{"id":"order-auto-cancel","question":"未付款订单多久会自动取消？","expected_sources":["knowledge/E-commerce Data/faq.json"],"answer_keywords":["24","自动取消"]}
