@@ -246,7 +246,4 @@ miniOpenClaw/
 - 扩展 Agent eval 数据集和失败样例分析
 - 将 memory v2 的重建、增量更新和检索指标做成可视化面板
 
-## 致谢
 
-- 初版项目思路参考：[lyxhnu/langchain-miniopenclaw](https://github.com/lyxhnu/langchain-miniopenclaw)
-- 结构化长期记忆方案参考项目内 `docs/Structured Distillation for Personalized Agent Memory.pdf`
