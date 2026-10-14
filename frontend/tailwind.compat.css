@@ -1,0 +1,21 @@
+/* Preserve the established v3 visual defaults during the compiler upgrade. */
+@theme {
+  --default-ring-width: 3px;
+  --default-ring-color: #3b82f6;
+}
+
+@layer base {
+  *, ::before, ::after, ::backdrop, ::file-selector-button {
+    border-color: #e5e7eb;
+  }
+  input::placeholder, textarea::placeholder {
+    color: #9ca3af;
+    opacity: 1;
+  }
+}
+
+/* v3 used an invisible outline that remains available in forced-colors mode. */
+@utility outline-none {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+}

@@ -1,4 +1,6 @@
 .env
+.env.*
+!.env.example
 .venv/
 .cursor/
 openspec/
@@ -15,6 +17,10 @@ backend/config/.env
 backend/knowledge/*
 backend/memory_module_v1/sessions/*.json
 backend/memory_module_v1/sessions/archive/*.json
+backend/memory_module_v1/sessions/trash/*.json
+backend/memory_module_v1/sessions/
+backend/sessions/
+backend/workspace/generated/
 backend/memory_module_v1/storage/chroma_memory/*
 backend/memory_module_v2/eval/*.jsonl
 backend/memory_module_v2/eval/*.json
@@ -32,3 +38,8 @@ frontend/.npm-cache/
 *.log
 .DS_Store
 Thumbs.db
+
+# Local browser verification and TypeScript cache
+.playwright-cli/
+output/playwright/
+frontend/tsconfig.tsbuildinfo

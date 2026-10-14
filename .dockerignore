@@ -1,5 +1,10 @@
 .git
 .gitignore
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
 backend/.venv
 backend/__pycache__
 backend/.pytest_cache
@@ -8,7 +13,12 @@ backend/memory_module_v1/storage/chroma_memory
 backend/memory_module_v1/sessions
 backend/storage
 backend/sessions
+backend/workspace/generated
 frontend/node_modules
 frontend/.next
+frontend/.npm-cache
+frontend/tsconfig.tsbuildinfo
+.playwright-cli
+output
 **/__pycache__
 **/*.pyc

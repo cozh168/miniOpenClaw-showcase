@@ -13,13 +13,15 @@ Mini-OpenClaw 是一个本地运行、文件优先、可审计的 AI Agent 工�
 - **Guardian 前置安全检查**：在 Agent 执行前检测 prompt injection、越权指令、系统提示词/密钥窃取等风险，支持 fail-open / fail-closed 策略。
 - **可观测性**：可接入 Langfuse 追踪 prompt、工具轨迹、记忆检索、RAG 命中和 token usage。
 - **评测体系**：提供 RAG 对比评测脚本，统计成功率、关键词命中率、检索命中率、平均延迟和平均检索数量。
-- **前后端工作台**：FastAPI + SSE 流式输出，Next.js 三栏界面，支持会话列表、聊天区、文件/记忆/技能检查器。
+- **前后端工作台**：FastAPI + SSE 流式输出，Next.js 三栏界面，支持会话搜索、文件引用、工作区编辑、工具代码保存、运行日志、回收站和移动端布局。
 
 ## 效果展示
 
 ### 工作台页面
 
-![Mini-OpenClaw 工作台](./page_show1.png)
+![新版 Mini-OpenClaw 三栏工作台](./docs/screenshots/workbench.png)
+
+新版截图使用示例会话与文件数据展示布局，不包含私人会话或密钥。
 
 ![工作台细节](./Snipaste_2026-03-18_21-42-43.png)
 
@@ -37,7 +39,7 @@ Mini-OpenClaw 是一个本地运行、文件优先、可审计的 AI Agent 工�
 
 ### 后端
 
-- Python 3.10+
+- Python 3.11（本地与 CI 使用的版本）
 - FastAPI
 - LangChain 1.x / LangGraph
 - OpenAI-compatible Chat / Embedding API
@@ -47,38 +49,82 @@ Mini-OpenClaw 是一个本地运行、文件优先、可审计的 AI Agent 工�
 
 ### 前端
 
-- Next.js 14 App Router
+- Node.js 20 LTS / npm
+- Next.js 15 App Router
 - React 18
 - TypeScript
-- Tailwind CSS
+- Tailwind CSS 4
 - Monaco Editor
 
 ## 快速开始
 
-### 1. 启动后端
+从仓库根目录开始操作。后端和前端需要分别在两个终端运行。默认地址仅供本机使用：前端 `127.0.0.1:7788`，后端 `127.0.0.1:8002`。
+
+### 1. 安装后端并配置模型
+
+macOS / Linux：
 
 ```bash
 cd backend
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-copy config\.env.example config\.env
-uvicorn app:app --host 0.0.0.0 --port 8002 --reload
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+if [ ! -f config/.env ]; then cp config/.env.example config/.env; fi
 ```
 
-按需在 `backend/config/.env` 中配置模型、Embedding、Guardian、Langfuse、Postgres 等参数。
+Windows PowerShell：
+
+```powershell
+cd backend
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+if (-not (Test-Path config\.env)) { Copy-Item config\.env.example config\.env }
+```
+
+如果已经有 `config/.env`，保留现有文件，不要再次复制覆盖。使用 DeepSeek 的最简配置如下，请在 `.env` 中修改相应项：
+
+```env
+LLM_PROVIDER=deepseek
+LLM_MODEL=deepseek-chat
+LLM_API_KEY=
+DEEPSEEK_API_KEY=填写你的DeepSeek密钥
+GUARDIAN_ENABLED=false
+MEMORY_BACKEND=off
+KNOWLEDGE_RAG_DENSE_ENABLED=false
+EMBEDDING_API_KEY=
+BAILIAN_API_KEY=
+DASHSCOPE_API_KEY=
+```
+
+模板中的 `BAILIAN_API_KEY` / `DASHSCOPE_API_KEY` 是占位符；最简配置需要清空，避免启动时尝试无效的 Embedding 请求。此配置使用 DeepSeek 进行聊天，暂不启用需要独立模型密钥的 Guardian、长期记忆或稠密检索。文档 RAG 的开关保存在 `backend/config/config.json`，默认关闭，也可在界面中切换。需要这些功能时，再按下文配置对应服务和密钥。
+
+在已激活虚拟环境的后端终端启动：
+
+```bash
+python -m uvicorn app:app --host 127.0.0.1 --port 8002
+```
+
+打开 [健康检查](http://127.0.0.1:8002/health)，应看到 `{"status":"ok"}`。健康检查确认进程运行；模型密钥是否有效需发送一条实际消息验证。开发时可给启动命令加 `--reload`。
 
 ### 2. 启动前端
 
+另开终端，从仓库根目录执行：
+
 ```bash
 cd frontend
-npm install
-npm run dev
+npm ci
+npm run build
+npm run start -- --hostname 127.0.0.1
 ```
 
-访问 [http://localhost:7788](http://localhost:7788)。
+访问 [http://127.0.0.1:7788](http://127.0.0.1:7788)。开发界面时使用 `npm run dev -- --hostname 127.0.0.1`。重新执行 `npm run build` 前，先按 `Ctrl+C` 停止正在运行的前端服务，构建完成后再启动，避免旧进程读取新的 `.next` 资源造成页面或样式异常。
+
+前端 API 地址使用浏览器当前主机名和固定端口 `8002`，因此前后端应使用同一个主机名。这里没有单独的前端密钥配置；模型密钥只放在后端 `.env`。当前后端没有用户登录，Python 和终端工具以本地后端进程权限执行，请保持默认本机绑定，不要直接暴露到公网。
 
 ### 3. Docker Compose
+
+先完成 `.env` 配置。Docker 镜像构建不包含 `.env`；Compose 在运行时读取它。
 
 ```bash
 docker compose up --build
@@ -88,6 +134,15 @@ docker compose up --build
 
 - Frontend: [http://127.0.0.1:7788](http://127.0.0.1:7788)
 - Backend: [http://127.0.0.1:8002](http://127.0.0.1:8002)
+
+Compose 同样只向本机发布端口。工作区、知识库、会话与索引通过目录挂载保存在宿主机。当前 Compose 不自动提供 PostgreSQL；开启 memory v2 或 Postgres checkpointer 时需要自行配置可访问的数据库。
+
+### 常见启动问题
+
+- **页面只有文字或样式丢失**：停止前端，在 `frontend/` 重新运行 `npm run build`，然后 `npm run start -- --hostname 127.0.0.1`；浏览器强制刷新。
+- **聊天被 Guardian 拦截或提示鉴权失败**：仅配置 DeepSeek 时，检查最简配置中的 `GUARDIAN_ENABLED=false`；启用 Guardian 时必须填写它自己的 `GUARDIAN_API_KEY`。
+- **端口被占用**：停止已有的项目进程后再启动。前端 API 固定使用 `8002`，不要只修改后端端口。
+- **跨域请求返回 403**：默认仅允许 `localhost` 和 `127.0.0.1` 的项目端口。如确需其他前端地址，在后端 `.env` 配置 `BACKEND_ALLOWED_ORIGINS=http://192.168.1.10:7788` 后重启后端；多个来源用逗号分隔，不支持通配符或路径。额外来源配置不会添加登录鉴权。
 
 ## 核心配置
 
@@ -158,12 +213,14 @@ TERMINAL_TOOL_ENABLED=true
 PYTHON_REPL_TOOL_ENABLED=true
 FETCH_URL_TOOL_ENABLED=true
 READ_FILE_TOOL_ENABLED=true
-TERMINAL_ALLOWED_COMMANDS=Get-ChildItem,Get-Content,Select-String,python,pytest,uvicorn,npm,node,git
+TERMINAL_ALLOWED_COMMANDS=ls,cat,pwd,Get-ChildItem,Get-Content,Select-String,python,pytest,uvicorn,npm,node,git
 READ_FILE_ALLOWED_PREFIXES=backend/,frontend/,docs/,skills/,workspace/,knowledge/
 READ_FILE_BLOCKED_PREFIXES=backend/config/.env,backend/storage/,frontend/node_modules/
 FETCH_URL_BLOCKED_HOSTS=localhost,127.0.0.1
 FETCH_URL_ALLOW_PRIVATE_HOSTS=false
 ```
+
+上面的命令白名单是可选示例。`TERMINAL_ALLOWED_COMMANDS` 留空时不限制命令名；填写后只允许列表内的命令。此策略不提供操作系统沙箱，Python 工具仍以运行后端的本地用户权限执行。
 
 相关接口：
 
@@ -194,12 +251,28 @@ backend/evals/reports/chat_eval_report.json
 
 ## 测试
 
+GitHub CI 会检查后端测试、前端类型/Lint/SSE 回归、依赖审计，并构建和启动 Docker 服务验证健康端点。
+
+后端测试使用临时目录和模拟模型，不需要真实 API 密钥或 PostgreSQL：
+
 ```bash
 cd backend
 python -m pytest tests -q
 ```
 
-当前后端测试覆盖 Guardian、工具安全、Prompt Builder、知识库检索等模块。
+前端检查：
+
+```bash
+cd frontend
+npm ci
+npm run lint
+npx tsc --noEmit
+npm run build
+```
+
+GitHub Actions 对 pull request 和 `main` 自动执行后端依赖安装/测试及前端类型、Lint 和构建检查。后端覆盖 Guardian、工具策略、Prompt Builder、知识库、文件路径与内容校验、回收站、并发会话与流式响应。实际模型接入和浏览器交互仍需在本地使用真实配置验证。
+
+`.gitignore` 排除密钥、会话、索引、知识库、本地构建产物和工具生成的 `backend/workspace/generated/`。`workspace/` 中的身份/用户/系统提示文件及长期记忆模板属于源文件，编辑成个人资料后，在提交前检查 diff；不要把个人信息或密钥写入准备发布的模板。
 
 ## 项目结构
 

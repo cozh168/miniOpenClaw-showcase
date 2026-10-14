@@ -7,9 +7,25 @@ from pydantic import BaseModel, Field
 
 from graph.agent import agent_manager
 from service.prompt_builder import build_system_prompt
-from service.session_manager import DEFAULT_SESSION_TITLE
+from service.session_manager import DEFAULT_SESSION_TITLE, SessionBusyError, SessionManager
 
 router = APIRouter()
+
+
+def _manager() -> SessionManager:
+    manager = agent_manager.session_manager
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Agent manager is not initialized")
+    return manager
+
+
+def _require_session(manager: SessionManager, session_id: str) -> None:
+    try:
+        exists = manager.session_exists(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not exists:
+        raise HTTPException(status_code=404, detail="Session not found")
 
 
 class CreateSessionRequest(BaseModel):
@@ -40,11 +56,31 @@ async def create_session(payload: CreateSessionRequest) -> dict[str, Any]:
     return session_manager.create_session(title=payload.title)
 
 
+@router.get("/sessions/trash")
+async def list_deleted_sessions() -> list[dict[str, Any]]:
+    return _manager().list_trash()
+
+
+@router.post("/sessions/{session_id}/restore")
+async def restore_session(session_id: str) -> dict[str, Any]:
+    try:
+        return _manager().restore_session(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SessionBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.put("/sessions/{session_id}")
 async def rename_session(session_id: str, payload: RenameSessionRequest) -> dict[str, Any]:
     session_manager = agent_manager.session_manager
     if session_manager is None:
         raise HTTPException(status_code=503, detail="Agent manager is not initialized")
+    _require_session(session_manager, session_id)
     return session_manager.rename_session(session_id, payload.title)
 
 
@@ -53,7 +89,13 @@ async def delete_session(session_id: str) -> dict[str, bool]:
     session_manager = agent_manager.session_manager
     if session_manager is None:
         raise HTTPException(status_code=503, detail="Agent manager is not initialized")
-    session_manager.delete_session(session_id)
+    _require_session(session_manager, session_id)
+    try:
+        session_manager.delete_session(session_id)
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SessionBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"ok": True}
 
 
@@ -62,6 +104,7 @@ async def get_session_messages(session_id: str) -> dict[str, Any]:
     session_manager = agent_manager.session_manager
     if session_manager is None or agent_manager.base_dir is None:
         raise HTTPException(status_code=503, detail="Agent manager is not initialized")
+    _require_session(session_manager, session_id)
     return {
         "system_prompt": build_system_prompt(agent_manager.base_dir),
         "messages": session_manager.load_session(session_id),
@@ -73,6 +116,7 @@ async def get_session_history(session_id: str) -> dict[str, Any]:
     session_manager = agent_manager.session_manager
     if session_manager is None:
         raise HTTPException(status_code=503, detail="Agent manager is not initialized")
+    _require_session(session_manager, session_id)
     return session_manager.get_history(session_id)
 
 
@@ -81,6 +125,7 @@ async def generate_title(session_id: str, payload: GenerateTitleRequest) -> dict
     session_manager = agent_manager.session_manager
     if session_manager is None:
         raise HTTPException(status_code=503, detail="Agent manager is not initialized")
+    _require_session(session_manager, session_id)
     if payload.message:
         seed = payload.message
     else:

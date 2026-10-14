@@ -7,23 +7,12 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from graph.agent import agent_manager
+from memory_module_v2.service.config import get_memory_backend
 from service.memory_indexer import memory_indexer
-from tools.skills_scanner import refresh_snapshot, scan_skills
+from service.workbench_files import read_text_file, resolve_editable_path, validate_text_content, write_text_file
+from tools.skills_scanner import refresh_snapshot, scan_skills, validate_skill_frontmatter
 
 router = APIRouter()
-
-ALLOWED_PREFIXES = (
-    "workspace/",
-    "memory/",
-    "memory_module_v1/long_term_memory/",
-    "skills/",
-    "knowledge/",
-)
-ALLOWED_ROOT_FILES = {
-    "skills/SKILLS_SNAPSHOT.md",
-    "memory_module_v1/long_term_memory/MEMORY.md",
-}
-
 
 class SaveFileRequest(BaseModel):
     path: str = Field(..., min_length=1)
@@ -58,50 +47,48 @@ def _resolve_path(relative_path: str) -> Path:
     if agent_manager.base_dir is None:
         raise HTTPException(status_code=503, detail="Agent manager is not initialized")
 
-    normalized = relative_path.replace("\\", "/").strip("/")
-    if normalized == "SKILLS_SNAPSHOT.md":
-        normalized = "skills/SKILLS_SNAPSHOT.md"
-    elif normalized == "MEMORY.md":
-        normalized = "memory_module_v1/long_term_memory/MEMORY.md"
+    return resolve_editable_path(agent_manager.base_dir, relative_path)
 
-    if normalized not in ALLOWED_ROOT_FILES and not normalized.startswith(ALLOWED_PREFIXES):
-        raise HTTPException(status_code=400, detail="Path is not in the editable whitelist")
 
-    candidate = (agent_manager.base_dir / normalized).resolve()
-    base_dir = agent_manager.base_dir.resolve()
-    if base_dir not in candidate.parents and candidate != base_dir:
-        raise HTTPException(status_code=400, detail="Path traversal detected")
-    return candidate
+def notify_file_updated(normalized: str) -> None:
+    if normalized == "memory_module_v1/long_term_memory/MEMORY.md" and get_memory_backend() == "v1":
+        memory_indexer.rebuild_index()
+    if normalized.startswith("skills/"):
+        refresh_snapshot(agent_manager.base_dir)
+
+
+def validate_skill_content(normalized: str, content: str) -> None:
+    if normalized.startswith("skills/") and Path(normalized).name.casefold() == "skill.md":
+        validate_text_content(content)
+        try:
+            validate_skill_frontmatter(content)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/files")
 async def read_file(path: str = Query(..., min_length=1)) -> dict[str, str]:
     file_path = _resolve_path(path)
+    normalized = file_path.relative_to(agent_manager.base_dir.resolve()).as_posix()
     if not file_path.exists():
-        normalized = path.replace("\\", "/").strip("/")
         default_content = _DEFAULT_TEMPLATES.get(normalized)
         if default_content is not None:
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(default_content, encoding="utf-8")
+            write_text_file(file_path, default_content)
         else:
             raise HTTPException(status_code=404, detail="File not found")
     return {
-        "path": path.replace("\\", "/"),
-        "content": file_path.read_text(encoding="utf-8"),
+        "path": normalized,
+        "content": read_text_file(file_path),
     }
 
 
 @router.post("/files")
 async def save_file(payload: SaveFileRequest) -> dict[str, Any]:
     file_path = _resolve_path(payload.path)
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_text(payload.content, encoding="utf-8")
-
-    normalized = payload.path.replace("\\", "/")
-    if normalized == "memory_module_v1/long_term_memory/MEMORY.md":
-        memory_indexer.rebuild_index()
-    if normalized.startswith("skills/"):
-        refresh_snapshot(agent_manager.base_dir)
+    normalized = file_path.relative_to(agent_manager.base_dir.resolve()).as_posix()
+    validate_skill_content(normalized, payload.content)
+    write_text_file(file_path, payload.content)
+    notify_file_updated(normalized)
 
     return {"ok": True, "path": normalized}
 
