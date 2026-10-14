@@ -80,6 +80,53 @@ jobs:
         run: |
           curl --fail --silent http://127.0.0.1:8002/health
           curl --fail --silent --retry 15 --retry-delay 2 --retry-all-errors --output /dev/null http://127.0.0.1:7788/
+      - name: Package verified deployment images
+        shell: bash
+        run: |
+          backend_container=$(docker compose ps --quiet backend)
+          frontend_container=$(docker compose ps --quiet frontend)
+          test -n "$backend_container"
+          test -n "$frontend_container"
+          docker image tag "$(docker inspect --format '{{.Image}}' "$backend_container")" miniopenclaw-backend:release
+          docker image tag "$(docker inspect --format '{{.Image}}' "$frontend_container")" miniopenclaw-frontend:release
+          docker image save miniopenclaw-backend:release miniopenclaw-frontend:release | gzip -1 > miniopenclaw-images.tar.gz
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          archive = Path("miniopenclaw-images.tar.gz")
+          checksum = hashlib.sha256()
+          with archive.open("rb") as handle:
+              for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+                  checksum.update(chunk)
+          tags = ["miniopenclaw-backend:release", "miniopenclaw-frontend:release"]
+          images = json.loads(subprocess.check_output(["docker", "image", "inspect", *tags], text=True))
+          manifest = {
+              "schema_version": 1,
+              "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "archive": {"name": archive.name, "sha256": checksum.hexdigest(), "size_bytes": archive.stat().st_size},
+              "images": [
+                  {"tag": tag, "image_id": image["Id"], "os": image["Os"], "architecture": image["Architecture"]}
+                  for tag, image in zip(tags, images)
+              ],
+          }
+          Path("miniopenclaw-images-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          PY
+      - name: Upload verified deployment images
+        uses: actions/upload-artifact@v4
+        with:
+          name: miniopenclaw-deployment-images
+          path: |
+            miniopenclaw-images.tar.gz
+            miniopenclaw-images-manifest.json
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
       - name: Collect service diagnostics
         if: failure()
         run: docker compose logs --no-color
