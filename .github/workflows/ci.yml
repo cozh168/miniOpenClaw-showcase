@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r backend/requirements.txt
+      - name: Check dependency compatibility
+        run: python -m pip check
+      - name: Test without external credentials
+        run: python -m pytest backend/tests -q
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test:unit
+      - run: npm audit --audit-level=high
+      - run: npm run build
+      - run: npx tsc --noEmit
+
+  containers:
+    name: Container smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure isolated local test services
+        run: |
+          cat > backend/config/.env <<'ENV'
+          LLM_PROVIDER=openai
+          LLM_MODEL=gpt-4o-mini
+          LLM_API_KEY=ci-placeholder-not-a-real-key
+          EMBEDDING_API_KEY=
+          MEMORY_BACKEND=off
+          CHECKPOINTER=memory
+          GUARDIAN_ENABLED=false
+          ENV
+          docker compose config --quiet
+      - name: Build and start containers
+        run: docker compose up --build --wait --wait-timeout 180
+      - name: Verify local endpoints
+        run: |
+          curl --fail --silent http://127.0.0.1:8002/health
+          curl --fail --silent --retry 15 --retry-delay 2 --retry-all-errors --output /dev/null http://127.0.0.1:7788/
+      - name: Collect service diagnostics
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Stop isolated test services
+        if: always()
+        run: docker compose down --volumes

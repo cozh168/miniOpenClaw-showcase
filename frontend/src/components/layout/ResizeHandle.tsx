@@ -3,9 +3,10 @@
 import { useEffect, useState } from "react";
 
 export function ResizeHandle({
-  onResize
+  onResize, width
 }: {
   onResize: (delta: number) => void;
+  width: number;
 }) {
   const [dragging, setDragging] = useState(false);
 
@@ -32,11 +33,15 @@ export function ResizeHandle({
 
   return (
     <div
-      aria-hidden
-      className="group flex w-3 cursor-col-resize items-center justify-center"
-      onMouseDown={() => setDragging(true)}
-    >
-      <div className="h-20 w-[2px] rounded-full bg-[rgba(13,37,48,0.14)] transition group-hover:h-28 group-hover:bg-[rgba(15,139,141,0.45)]" />
-    </div>
+      className={`resize-handle ${dragging ? "is-dragging" : ""}`}
+      role="separator" aria-label="调整会话侧栏宽度" aria-orientation="vertical"
+      aria-valuemin={224} aria-valuemax={380} aria-valuenow={width} tabIndex={0}
+      onMouseDown={(event) => { event.preventDefault(); setDragging(true); }}
+      onKeyDown={(event) => {
+        if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+          event.preventDefault(); onResize(event.key === "ArrowLeft" ? -16 : 16);
+        }
+      }}
+    />
   );
 }

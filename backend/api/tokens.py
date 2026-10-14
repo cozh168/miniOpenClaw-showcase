@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from graph.agent import agent_manager
 from service.prompt_builder import build_system_prompt
+from service.workbench_files import read_text_file, resolve_editable_path
 
 router = APIRouter()
 
@@ -53,7 +54,7 @@ def _count_tokens(text: str) -> int:
     encoder = _get_encoder()
     if encoder is None:
         return _estimate_tokens(text)
-    return len(encoder.encode(text or ""))
+    return len(encoder.encode(text or "", disallowed_special=()))
 
 
 @router.get("/tokens/session/{session_id}")
@@ -62,7 +63,12 @@ async def session_tokens(session_id: str) -> dict[str, int]:
     if session_manager is None or agent_manager.base_dir is None:
         raise HTTPException(status_code=503, detail="Agent manager is not initialized")
 
-    record = session_manager.get_history(session_id)
+    try:
+        record = session_manager.get_history(session_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     system_prompt = build_system_prompt(agent_manager.base_dir)
     message_text = []
     for item in record.get("messages", []):
@@ -87,10 +93,10 @@ async def file_tokens(payload: FileTokensRequest) -> dict[str, Any]:
     files: list[dict[str, Any]] = []
     total = 0
     for relative_path in payload.paths:
-        path = (agent_manager.base_dir / relative_path).resolve()
-        if not path.exists() or path.is_dir():
+        path = resolve_editable_path(agent_manager.base_dir, relative_path)
+        if not path.exists():
             continue
-        count = _count_tokens(path.read_text(encoding="utf-8"))
+        count = _count_tokens(read_text_file(path))
         total += count
         files.append({"path": relative_path, "tokens": count})
 

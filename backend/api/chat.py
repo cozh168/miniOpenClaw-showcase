@@ -9,11 +9,13 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from graph.context import build_request_context
 from graph.agent import agent_manager
 from graph.checkpointer import reconnect_checkpointer_async
 from memory_module_v2.service.config import get_memory_backend
+from service.session_manager import SessionBusyError
 
 logger = logging.getLogger(__name__)
 
@@ -49,16 +51,30 @@ async def chat(payload: ChatRequest):
     if session_manager is None:
         raise HTTPException(status_code=503, detail="Agent manager is not initialized")
 
-    history_record = session_manager.load_session_record(payload.session_id)
+    try:
+        history_record = session_manager.load_session_record(payload.session_id)
+        history_for_agent = session_manager.load_session_for_agent(payload.session_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid session ID") from exc
     is_first_user_message = not any(
         message.get("role") == "user"
         for message in history_record.get("messages", [])
     )
     request_context = build_request_context(thread_id=payload.session_id)
-    # 对话历史由 checkpointer 管理，不再从 SessionManager 传入
-    history_for_agent: list[dict[str, Any]] = []
+    # Persisted text history restores context if the checkpointer was reset.
 
-    async def event_generator():
+    try:
+        chat_token = session_manager.begin_chat(payload.session_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid session ID") from exc
+    except SessionBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    async def generate_events():
         retried = False
         while True:
             segments: list[dict[str, Any]] = []
@@ -79,11 +95,17 @@ async def chat(payload: ChatRequest):
                                 "tool": event.get("tool", "tool"),
                                 "input": event.get("input", ""),
                                 "output": "",
+                                **({"call_id": event["call_id"]} if event.get("call_id") else {}),
                             }
                         )
                     elif event_type == "tool_end":
-                        if current_segment["tool_calls"]:
-                            current_segment["tool_calls"][-1]["output"] = event.get("output", "")
+                        calls = current_segment["tool_calls"]
+                        call_id = event.get("call_id")
+                        matching = next((call for call in calls if call_id and call.get("call_id") == call_id), None)
+                        if matching is None and not call_id:
+                            matching = next((call for call in calls if call["tool"] == event.get("tool") and not call["output"]), None)
+                        if matching is not None:
+                            matching["output"] = event.get("output", "")
                     elif event_type == "new_response":
                         if current_segment["content"].strip() or current_segment["tool_calls"]:
                             segments.append(current_segment)
@@ -94,26 +116,19 @@ async def chat(payload: ChatRequest):
                         if current_segment["content"].strip() or current_segment["tool_calls"]:
                             segments.append(current_segment)
 
-                        session_manager.save_message(payload.session_id, "user", payload.message)
-                        for segment in segments:
-                            session_manager.save_message(
-                                payload.session_id,
-                                "assistant",
-                                segment["content"],
-                                tool_calls=segment["tool_calls"] or None,
-                            )
+                        session_manager.save_exchange(payload.session_id, payload.message, segments)
 
                     data = {key: value for key, value in event.items() if key != "type"}
                     yield _sse(event_type, data)
 
                     if event_type == "done":
                         if is_first_user_message:
-                            title = await agent_manager.generate_title(payload.message)
-                            session_manager.set_title(payload.session_id, title)
-                            yield _sse(
-                                "title",
-                                {"session_id": payload.session_id, "title": title},
-                            )
+                            try:
+                                title = await agent_manager.generate_title(payload.message)
+                                session_manager.set_title(payload.session_id, title)
+                                yield _sse("title", {"session_id": payload.session_id, "title": title})
+                            except Exception:
+                                logger.warning("Could not generate session title", exc_info=True)
 
                         if get_memory_backend() == "v2":
                             asyncio.create_task(
@@ -138,13 +153,29 @@ async def chat(payload: ChatRequest):
                 yield _sse("error", {"error": str(exc)})
                 return
 
+    async def event_generator():
+        try:
+            async for event in generate_events():
+                yield event
+        finally:
+            session_manager.end_chat(payload.session_id, chat_token)
+
     if payload.stream:
-        return StreamingResponse(event_generator(), media_type="text/event-stream")
+        return StreamingResponse(event_generator(), media_type="text/event-stream", background=BackgroundTask(session_manager.end_chat, payload.session_id, chat_token))
 
     final_text = ""
-    async for raw_event in event_generator():
-        if raw_event.startswith("event: done"):
-            final_text = raw_event
+    events = event_generator()
+    try:
+        async for raw_event in events:
+            if raw_event.startswith("event: done"):
+                final_text = json.loads(raw_event.split("data: ", 1)[1])["content"]
+            elif raw_event.startswith("event: error"):
+                error = json.loads(raw_event.split("data: ", 1)[1]).get("error", "Model request failed")
+                raise HTTPException(status_code=502, detail=error)
+    finally:
+        # An exception in this consumer must release the lease now, without
+        # waiting for the async generator's eventual garbage collection.
+        await events.aclose()
     return JSONResponse({"content": final_text})
 
 

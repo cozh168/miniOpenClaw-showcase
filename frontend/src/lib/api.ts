@@ -2,6 +2,9 @@ export type ToolCall = {
   tool: string;
   input: string;
   output: string;
+  call_id?: string;
+  /** UI completion marker; historical tool records are already complete. */
+  completed?: boolean;
 };
 
 export type RetrievalResult = {
@@ -35,6 +38,62 @@ export type SessionHistory = {
 export type StreamHandlers = {
   onEvent: (event: string, data: Record<string, unknown>) => void;
 };
+
+export type WorkspaceFileNode = {
+  path: string;
+  name: string;
+  type: "file" | "directory";
+  size: number;
+  editable: boolean;
+  children?: WorkspaceFileNode[];
+};
+
+export type RuntimeInfo = {
+  python_version: string;
+  python_environment: string;
+  provider: string;
+  model: string;
+  memory_backend: string;
+  rag_enabled: boolean;
+  tools: Array<{ name: string; enabled: boolean }>;
+};
+
+export type ToolAuditEntry = {
+  timestamp: string;
+  tool: string;
+  status: string;
+  input_preview: string;
+  output_preview: string;
+  reason: string | null;
+  duration_ms: number | null;
+  metadata: Record<string, unknown>;
+};
+
+export function getWorkspaceFiles() {
+  return request<{ files: WorkspaceFileNode[] }>("/workbench/files");
+}
+
+export function createWorkspaceFile(path: string, content: string) {
+  return request<{ ok: boolean; path: string }>("/workbench/files", {
+    method: "POST", body: JSON.stringify({ path, content })
+  });
+}
+
+export function getRuntimeInfo() {
+  return request<RuntimeInfo>("/workbench/runtime");
+}
+
+export function getToolAudit(limit = 100) {
+  return request<{ items: ToolAuditEntry[] }>(`/tool-audit?limit=${limit}`);
+}
+
+export function listTrashedSessions() {
+  return request<SessionSummary[]>("/sessions/trash");
+}
+
+export function restoreSession(sessionId: string) {
+  return request<SessionSummary>(`/sessions/${encodeURIComponent(sessionId)}/restore`, { method: "POST" });
+}
 
 function getApiBase() {
   if (typeof window === "undefined") {
@@ -157,9 +216,10 @@ export async function streamChat(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let blockLines: string[] = [];
 
   const flushBlock = (block: string) => {
-    const lines = block.split("\n");
+    const lines = block.split(/\r\n|\r|\n/);
     let event = "message";
     const dataLines: string[] = [];
 
@@ -180,22 +240,35 @@ export async function streamChat(
     handlers.onEvent(event, data);
   };
 
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
-
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary >= 0) {
-      flushBlock(buffer.slice(0, boundary));
-      buffer = buffer.slice(boundary + 2);
-      boundary = buffer.indexOf("\n\n");
-    }
-
-    if (done) {
-      if (buffer.trim()) {
-        flushBlock(buffer);
+  let completed = false;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+      let newline = /\r\n|\r|\n/.exec(buffer);
+      while (newline) {
+        // A CR at a chunk boundary may be the first half of CRLF.
+        if (!done && newline[0] === "\r" && newline.index === buffer.length - 1) break;
+        const line = buffer.slice(0, newline.index);
+        buffer = buffer.slice(newline.index + newline[0].length);
+        if (line === "") {
+          flushBlock(blockLines.join("\n"));
+          blockLines = [];
+        } else {
+          blockLines.push(line);
+        }
+        newline = /\r\n|\r|\n/.exec(buffer);
       }
-      break;
+
+      if (done) {
+        if (buffer) blockLines.push(buffer);
+        if (blockLines.length) flushBlock(blockLines.join("\n"));
+        completed = true;
+        break;
+      }
     }
+  } finally {
+    if (!completed) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
 }
